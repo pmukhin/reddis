@@ -23,6 +23,7 @@ impl Error for CmdError {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Ping,
+    TtlCount,
     Get(String),
     Set(String, Vec<u8>),
     SetEx(String, Vec<u8>, u64),
@@ -40,6 +41,9 @@ pub fn parse_command(s: String) -> Result<Command, CmdError> {
 
     if tokens[0] == "PING" {
         return Ok(Command::Ping);
+    }
+    if tokens[0] == "TTLCOUNT" {
+        return Ok(Command::TtlCount);
     }
     if tokens[0] == "GET" && tokens.len() == 2 {
         return Ok(Command::Get(tokens[1].to_owned()));

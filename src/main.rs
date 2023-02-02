@@ -70,7 +70,10 @@ impl<'a> Session<'a> {
                     Option::None => Ok(String::from("NONE")),
                     Option::Some(v) => Ok(String::from_utf8(v)?),
                 }
-            }
+            },
+            Ok(cmd::Command::TtlCount) => {
+                Ok(format!("{}", self.redis.ttl_keys().await))
+            },
             Ok(cmd::Command::Set(key, value)) => {
                 info!("set: {}", key);
                 let _ = self.redis.set(key, value).await;
