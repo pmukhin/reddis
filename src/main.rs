@@ -3,11 +3,11 @@ mod redis;
 
 use log::info;
 use redis::Redis;
+
 use std::env;
 use std::error::Error;
-use std::ops::Add;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use tokio::io::BufReader;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::net::tcp::{ReadHalf, WriteHalf};
@@ -28,14 +28,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     loop {
         let (socket, _) = listener.accept().await.unwrap();
-        start(socket, redis.clone()).await;
+        start_session(socket, redis.clone()).await;
     }
 }
 
-async fn start(mut socket: TcpStream, redis: Arc<Redis>) {
+async fn start_session(mut socket: TcpStream, redis: Arc<Redis>) {
     tokio::spawn(async move {
-        let r = redis.clone();
-        Session::new(&mut socket, r).start_session().await;
+        Session::new(&mut socket, redis).run().await;
     });
 }
 
@@ -70,10 +69,8 @@ impl<'a> Session<'a> {
                     Option::None => Ok(String::from("NONE")),
                     Option::Some(v) => Ok(String::from_utf8(v)?),
                 }
-            },
-            Ok(cmd::Command::TtlCount) => {
-                Ok(format!("{}", self.redis.ttl_keys().await))
-            },
+            }
+            Ok(cmd::Command::TtlCount) => Ok(format!("{}", self.redis.ttl_keys().await)),
             Ok(cmd::Command::Set(key, value)) => {
                 info!("set: {}", key);
                 let _ = self.redis.set(key, value).await;
@@ -89,7 +86,7 @@ impl<'a> Session<'a> {
         }
     }
 
-    pub async fn start_session(&mut self) {
+    pub async fn run(&mut self) {
         loop {
             let output = self.handle_cmd().await.unwrap();
 

@@ -2,9 +2,9 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::ops::Add;
 use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::sync::atomic::Ordering;
 
 use log::info;
 
@@ -30,15 +30,13 @@ impl Redis {
 
         spawn_ttl_heap_cleaner(shared_data.clone()).await;
 
-        Redis {
+        Redis { 
             shared_data: shared_data.clone(),
         }
     }
 
     pub async fn ttl_keys(&self) -> u32 {
-        self.shared_data
-            .ttl_entries_count
-            .load(Ordering::SeqCst)
+        self.shared_data.ttl_entries_count.load(Ordering::SeqCst)
     }
 
     pub async fn set(&self, key: String, value: Vec<u8>) {
@@ -101,6 +99,7 @@ async fn spawn_ttl_heap_cleaner(shared_data: Arc<SharedData>) {
                 if *w >= now {
                     break;
                 }
+
                 info!("deleting stale key={}", key);
                 let _ = d.remove(key);
                 ttl_heap.pop().unwrap();
@@ -108,4 +107,27 @@ async fn spawn_ttl_heap_cleaner(shared_data: Arc<SharedData>) {
             }
         }
     });
+}
+
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_redis_set() {
+        let redis = Redis::new().await;
+        for i in 0..100 {
+            redis
+                .set(
+                    format!("key_{}", i),
+                    format!("value_{}", i).as_bytes().to_vec(),
+                )
+                .await
+        }
+        for i in 0..100 {
+            let key = format!("key_{}", i);
+            let value = format!("value_{}", i).as_bytes().to_vec();
+            assert_eq!(redis.get(&key).await, Some(value));
+        }
+        assert_eq!(redis.ttl_keys().await, 0);
+    }
 }
