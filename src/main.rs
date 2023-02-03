@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let addr = env::args()
         .nth(1)
-        .unwrap_or_else(|| "0.0.0.0:8082".to_string());
+        .unwrap_or_else(|| "0.0.0.0:6379".to_string());
 
     let listener = TcpListener::bind(&addr).await?;
     let redis = Arc::new(Redis::new().await);
@@ -63,17 +63,14 @@ impl<'a> Session<'a> {
 
         match command {
             Ok(cmd::Command::Ping) => Ok(String::from("PONG")),
-            Ok(cmd::Command::Get(key)) => {
-                let entry = self.redis.get(&key).await;
-                match entry {
-                    Option::None => Ok(String::from("NONE")),
-                    Option::Some(v) => Ok(String::from_utf8(v)?),
-                }
-            }
+            Ok(cmd::Command::Get(key)) => match self.redis.get(&key).await {
+                Option::None => Ok(String::from("NONE")),
+                Option::Some(v) => Ok(String::from_utf8(v)?),
+            },
             Ok(cmd::Command::TtlCount) => Ok(format!("{}", self.redis.ttl_keys().await)),
             Ok(cmd::Command::Set(key, value)) => {
                 info!("set: {}", key);
-                let _ = self.redis.set(key, value).await;
+                self.redis.set(key, value).await;
                 Ok("+OK".to_string())
             }
             Ok(cmd::Command::SetEx(key, value, ttl)) => {

@@ -1,9 +1,7 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::ops::Add;
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use log::info;
@@ -11,9 +9,8 @@ use log::info;
 static INITIAL_CAPACITY: usize = 256;
 
 struct SharedData {
-    dict: Mutex<HashMap<String, Vec<u8>>>,
-    ttl_heap: Mutex<BinaryHeap<Reverse<(u64, String)>>>,
-    ttl_entries_count: AtomicU32,
+    dict: RwLock<HashMap<String, Vec<u8>>>,
+    ttl_heap: RwLock<BinaryHeap<Reverse<(u64, String)>>>,
 }
 
 pub struct Redis {
@@ -23,26 +20,25 @@ pub struct Redis {
 impl Redis {
     pub async fn new() -> Redis {
         let shared_data = Arc::new(SharedData {
-            dict: Mutex::from(HashMap::with_capacity(INITIAL_CAPACITY)),
-            ttl_heap: Mutex::from(BinaryHeap::new()),
-            ttl_entries_count: AtomicU32::new(0),
+            dict: RwLock::from(HashMap::with_capacity(INITIAL_CAPACITY)),
+            ttl_heap: RwLock::from(BinaryHeap::new()),
         });
 
         spawn_ttl_heap_cleaner(shared_data.clone()).await;
 
-        Redis { 
+        Redis {
             shared_data: shared_data.clone(),
         }
     }
 
-    pub async fn ttl_keys(&self) -> u32 {
-        self.shared_data.ttl_entries_count.load(Ordering::SeqCst)
+    pub async fn ttl_keys(&self) -> usize {
+        self.shared_data.ttl_heap.try_read().unwrap().len()
     }
 
     pub async fn set(&self, key: String, value: Vec<u8>) {
         self.shared_data
             .dict
-            .lock()
+            .try_write()
             .expect("Unable to lock mutex")
             .insert(key, value);
     }
@@ -55,19 +51,15 @@ impl Redis {
 
         self.shared_data
             .ttl_heap
-            .lock()
+            .try_write()
             .expect("Unable to lock mutex")
             .push(Reverse((ttl_value.as_secs(), key.to_string())));
-
-        self.shared_data
-            .ttl_entries_count
-            .fetch_add(1, Ordering::SeqCst);
     }
 
     pub async fn get(&self, key: &String) -> Option<Vec<u8>> {
         self.shared_data
             .dict
-            .lock()
+            .try_read()
             .expect("Unable to lock mutex")
             .get(key)
             .map(|x| x.to_vec())
@@ -80,30 +72,25 @@ async fn spawn_ttl_heap_cleaner(shared_data: Arc<SharedData>) {
 
         loop {
             interval.tick().await;
-            if shared_data.ttl_entries_count.load(Ordering::SeqCst) == 0 {
+
+            let ttl_heap_read_handle = shared_data.ttl_heap.try_read().unwrap();
+            if ttl_heap_read_handle.is_empty() {
                 continue;
             }
 
-            let mut ttl_heap = shared_data.ttl_heap.lock().unwrap();
-            if ttl_heap.is_empty() {
-                continue;
-            }
-
-            let mut d = shared_data.dict.lock().unwrap();
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
 
-            while let Some(Reverse((w, key))) = ttl_heap.peek() {
+            while let Some(Reverse((w, key))) = ttl_heap_read_handle.peek() {
                 if *w >= now {
                     break;
                 }
-
+                let mut d = shared_data.dict.try_write().unwrap();
                 info!("deleting stale key={}", key);
                 let _ = d.remove(key);
-                ttl_heap.pop().unwrap();
-                shared_data.ttl_entries_count.fetch_sub(1, Ordering::SeqCst);
+                shared_data.ttl_heap.try_write().unwrap().pop().unwrap();
             }
         }
     });
