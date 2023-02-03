@@ -9,20 +9,20 @@ use log::info;
 static INITIAL_CAPACITY: usize = 256;
 
 struct SharedData {
-    dict: RwLock<HashMap<String, Vec<u8>>>,
-    ttl_heap: RwLock<BinaryHeap<Reverse<(u64, String)>>>,
+    dict: HashMap<String, Vec<u8>>,
+    ttl_heap: BinaryHeap<Reverse<(u64, String)>>,
 }
 
 pub struct Redis {
-    shared_data: Arc<SharedData>,
+    shared_data: Arc<RwLock<SharedData>>,
 }
 
 impl Redis {
     pub async fn new() -> Redis {
-        let shared_data = Arc::new(SharedData {
-            dict: RwLock::from(HashMap::with_capacity(INITIAL_CAPACITY)),
-            ttl_heap: RwLock::from(BinaryHeap::new()),
-        });
+        let shared_data = Arc::new(RwLock::from(SharedData {
+            dict: HashMap::with_capacity(INITIAL_CAPACITY),
+            ttl_heap: BinaryHeap::new(),
+        }));
 
         spawn_ttl_heap_cleaner(shared_data.clone()).await;
 
@@ -32,14 +32,12 @@ impl Redis {
     }
 
     pub async fn ttl_keys(&self) -> usize {
-        self.shared_data.ttl_heap.try_read().unwrap().len()
+        self.shared_data.read().unwrap().ttl_heap.len()
     }
 
     pub async fn set(&self, key: String, value: Vec<u8>) {
-        self.shared_data
+        self.shared_data.write().unwrap()
             .dict
-            .try_write()
-            .expect("Unable to lock mutex")
             .insert(key, value);
     }
 
@@ -50,50 +48,48 @@ impl Redis {
         let ttl_value = now.add(Duration::from_secs(ttl));
 
         self.shared_data
+            .write()
+            .unwrap()
             .ttl_heap
-            .try_write()
-            .expect("Unable to lock mutex")
             .push(Reverse((ttl_value.as_secs(), key.to_string())));
     }
 
     pub async fn get(&self, key: &String) -> Option<Vec<u8>> {
         self.shared_data
+            .read()
+            .unwrap()
             .dict
-            .try_read()
-            .expect("Unable to lock mutex")
             .get(key)
             .map(|x| x.to_vec())
     }
 }
 
-async fn spawn_ttl_heap_cleaner(shared_data: Arc<SharedData>) {
+async fn spawn_ttl_heap_cleaner(shared_data: Arc<RwLock<SharedData>>) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
 
         loop {
             interval.tick().await;
 
-            let ttl_heap_read_handle = shared_data.ttl_heap.try_read().unwrap();
-            if ttl_heap_read_handle.is_empty() {
+            let ttl_heap = &mut shared_data.write().unwrap().ttl_heap;
+            if ttl_heap.is_empty() {
                 continue;
             }
-            drop(ttl_heap_read_handle);
-            
+
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
 
-            let mut ttl_heap_write_handle = shared_data.ttl_heap.try_write().unwrap();
-            while let Some(Reverse((w, key))) = ttl_heap_write_handle.peek() {
+            while let Some(Reverse((w, key))) = ttl_heap.peek() {
                 if *w >= now {
                     break;
                 }
-                let mut d = shared_data.dict.try_write().unwrap();
+                let d = &mut shared_data.write().unwrap().dict;
                 info!("deleting stale key={}", key);
 
                 d.remove(key).unwrap();
-                ttl_heap_write_handle.pop().unwrap();
+                ttl_heap.pop().unwrap();
             }
         }
     });
