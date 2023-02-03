@@ -77,31 +77,32 @@ async fn spawn_ttl_heap_cleaner(shared_data: Arc<SharedData>) {
             if ttl_heap_read_handle.is_empty() {
                 continue;
             }
-
+            drop(ttl_heap_read_handle);
+            
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
 
-            while let Some(Reverse((w, key))) = ttl_heap_read_handle.peek() {
+            let mut ttl_heap_write_handle = shared_data.ttl_heap.try_write().unwrap();
+            while let Some(Reverse((w, key))) = ttl_heap_write_handle.peek() {
                 if *w >= now {
                     break;
                 }
                 let mut d = shared_data.dict.try_write().unwrap();
                 info!("deleting stale key={}", key);
-                let _ = d.remove(key);
-                shared_data.ttl_heap.try_write().unwrap().pop().unwrap();
+
+                d.remove(key).unwrap();
+                ttl_heap_write_handle.pop().unwrap();
             }
         }
     });
 }
 
 mod tests {
-    use super::*;
-
     #[tokio::test]
     async fn test_redis_set() {
-        let redis = Redis::new().await;
+        let redis = super::Redis::new().await;
         for i in 0..100 {
             redis
                 .set(
