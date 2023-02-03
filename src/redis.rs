@@ -36,9 +36,7 @@ impl Redis {
     }
 
     pub async fn set(&self, key: String, value: Vec<u8>) {
-        self.shared_data.write().unwrap()
-            .dict
-            .insert(key, value);
+        self.shared_data.write().unwrap().dict.insert(key, value);
     }
 
     pub async fn setex(&self, key: String, value: Vec<u8>, ttl: u64) {
@@ -71,8 +69,7 @@ async fn spawn_ttl_heap_cleaner(shared_data: Arc<RwLock<SharedData>>) {
         loop {
             interval.tick().await;
 
-            let ttl_heap = &shared_data.read().unwrap().ttl_heap;
-            if ttl_heap.is_empty() {
+            if shared_data.read().unwrap().ttl_heap.is_empty() {
                 continue;
             }
 
@@ -81,10 +78,11 @@ async fn spawn_ttl_heap_cleaner(shared_data: Arc<RwLock<SharedData>>) {
                 .unwrap()
                 .as_secs();
 
-            let shared_data = &mut shared_data.write().unwrap();
+            let mut shared_data_guard = shared_data.write().unwrap();
+            let ref mut shared_data = *shared_data_guard;
 
-            while let Some(Reverse((w, key))) = ttl_heap.peek() {
-                if *w >= now {
+            while let Some(&Reverse((w, ref key))) = shared_data.ttl_heap.peek() {
+                if w >= now {
                     break;
                 }
 
