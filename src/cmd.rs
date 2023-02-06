@@ -27,6 +27,9 @@ pub enum Command {
     Get(String),
     Set(String, Vec<u8>),
     SetEx(String, Vec<u8>, u64),
+    Lpush(String, Vec<Vec<u8>>, bool),
+    Rpush(String, Vec<Vec<u8>>, bool),
+    Lpop(String),
 }
 
 fn tokenize(s: String) -> Result<Vec<String>, CmdError> {
@@ -46,24 +49,65 @@ pub fn parse_command(s: String) -> Result<Command, CmdError> {
         return Ok(Command::TtlCount);
     }
     if tokens[0] == "GET" && tokens.len() == 2 {
-        return Ok(Command::Get(tokens[1].to_owned()));
+        return Ok(Command::Get(tokens[1].to_string()));
     }
-    if tokens[0] == "SET" && tokens.len() > 2 {
-        let key = tokens[1].to_string();
-        let data = tokens[2].as_bytes();
-        return Result::Ok(Command::Set(key, data.to_vec()));
+    if tokens[0] == "SET" && tokens.len() == 3 {
+        return Result::Ok(Command::Set(
+            tokens[1].to_string(),
+            tokens[2].as_bytes().to_vec(),
+        ));
     }
     if tokens[0] == "SETEX" && tokens.len() == 4 {
-        let key = &tokens[1];
-        let ttl = &tokens[2];
-        let data = tokens[3].as_bytes();
-
-        return match ttl.parse::<u64>() {
-            Ok(v) if v > 0 => Result::Ok(Command::SetEx(key.to_string(), data.to_vec(), v)),
+        return match tokens[2].parse::<u64>() {
+            Ok(v) if v > 0 => Result::Ok(Command::SetEx(
+                tokens[1].to_string(),
+                tokens[3].as_bytes().to_vec(),
+                v,
+            )),
             _ => Result::Err(CmdError::ParseError(
                 "invalid expire time in 'setex' command".to_string(),
             )),
         };
+    }
+
+    fn drop_two(tokens: &Vec<String>) -> Vec<Vec<u8>> {
+        tokens[2..]
+            .iter()
+            .map(|x| x.as_bytes().to_vec())
+            .collect::<Vec<_>>()
+    }
+
+    if tokens[0] == "LPOP" && tokens.len() == 2 {
+        return Result::Ok(Command::Lpop(tokens[1].to_string()));
+    }
+
+    if tokens[0] == "LPUSH" && tokens.len() > 2 {
+        return Result::Ok(Command::Lpush(
+            tokens[1].to_string(),
+            drop_two(&tokens),
+            true,
+        ));
+    }
+    if tokens[0] == "RPUSH" && tokens.len() > 2 {
+        return Result::Ok(Command::Rpush(
+            tokens[1].to_string(),
+            drop_two(&tokens),
+            true,
+        ));
+    }
+    if tokens[0] == "LPUSHX" && tokens.len() > 2 {
+        return Result::Ok(Command::Lpush(
+            tokens[1].to_string(),
+            drop_two(&tokens),
+            false,
+        ));
+    }
+    if tokens[0] == "RPUSHX" && tokens.len() > 2 {
+        return Result::Ok(Command::Rpush(
+            tokens[1].to_string(),
+            drop_two(&tokens),
+            false,
+        ));
     }
 
     Result::Err(CmdError::ParseError("invalid command".to_string()))

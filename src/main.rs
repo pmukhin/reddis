@@ -1,5 +1,9 @@
+#![feature(let_chains)]
+
 mod cmd;
 mod redis;
+
+use cmd::{CmdError, Command};
 
 use log::info;
 use redis::Redis;
@@ -15,13 +19,15 @@ use tokio::net::{TcpListener, TcpStream};
 
 use simple_logger::SimpleLogger;
 
+use crate::redis::RedisError;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     SimpleLogger::new().init()?;
 
     let addr = env::args()
         .nth(1)
-        .unwrap_or_else(|| "0.0.0.0:6379".to_string());
+        .unwrap_or_else(|| "0.0.0.0:6380".to_string());
 
     let listener = TcpListener::bind(&addr).await?;
     let redis = Arc::new(Redis::new().await);
@@ -59,27 +65,50 @@ impl<'a> Session<'a> {
         let mut r = String::new();
         self.read.read_line(&mut r).await?;
 
-        let command = cmd::parse_command(r.trim().to_string());
+        let raw_command = r.trim().to_string();
+        info!("raw command=`{}`", raw_command);
+        let command = cmd::parse_command(raw_command);
 
         match command {
-            Ok(cmd::Command::Ping) => Ok(String::from("PONG")),
-            Ok(cmd::Command::Get(key)) => match self.redis.get(&key).await {
-                Option::None => Ok(String::from("NONE")),
-                Option::Some(v) => Ok(String::from_utf8(v)?),
+            Ok(Command::Ping) => Ok(String::from("PONG")),
+            Ok(Command::Get(key)) => match self.redis.get(&key).await {
+                Ok(Option::None) => Ok(String::from("NONE")),
+                Ok(Option::Some(v)) => Ok(String::from_utf8(v)?),
+                Err(e @ RedisError::TypeError) => Ok(format!("{}", e)),
             },
-            Ok(cmd::Command::TtlCount) => Ok(format!("{}", self.redis.ttl_keys().await)),
-            Ok(cmd::Command::Set(key, value)) => {
+            Ok(Command::TtlCount) => Ok(format!("{}", self.redis.ttl_keys().await)),
+            Ok(Command::Set(key, value)) => {
                 info!("set: {}", key);
                 self.redis.set(key, value).await;
                 Ok("+OK".to_string())
             }
-            Ok(cmd::Command::SetEx(key, value, ttl)) => {
+            Ok(Command::SetEx(key, value, ttl)) => {
                 info!("setex: {}, {}", key, ttl);
                 self.redis.setex(key, value, ttl).await;
 
                 Ok("+OK".to_string())
             }
-            Err(cmd::CmdError::ParseError(message)) => Ok(format!("-ERR {}", message)),
+            Ok(Command::Lpush(key, values, may_create)) => {
+                info!("lpush: {}, {:?}, {}", key, values, may_create);
+                let len = self.redis.lpush(key, values, may_create).await?;
+
+                Ok(format!("(integer) {}", len))
+            }
+            Ok(Command::Rpush(key, values, may_create)) => {
+                info!("rpush: {}, {:?}, {}", key, values, may_create);
+                let len = self.redis.rpush(key, values, may_create).await?;
+
+                Ok(format!("(integer) {}", len))
+            }
+            Ok(Command::Lpop(key)) => {
+                info!("lpop: {}!", key);
+                match self.redis.lpop(&key, 1).await {
+                    Ok(v) if v.is_empty() => Ok(String::from("(nil)")),
+                    Ok(v) => Ok(String::from_utf8(v[0].to_vec())?),
+                    Err(e @ RedisError::TypeError) => Ok(format!("{}", e)),
+                }
+            }
+            Err(CmdError::ParseError(message)) => Ok(format!("-ERR {}", message)),
         }
     }
 
