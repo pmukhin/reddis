@@ -2,14 +2,17 @@
 
 mod cmd;
 mod redis;
+mod err;
 
-use cmd::{CmdError, Command};
+use cmd::Command;
 
 use log::info;
 use redis::Redis;
 
 use std::env;
 use std::error::Error;
+use std::fmt::format;
+use std::os::macos::raw;
 use std::sync::Arc;
 
 use tokio::io::BufReader;
@@ -19,7 +22,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 use simple_logger::SimpleLogger;
 
-use crate::redis::RedisError;
+use err::RedisError;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -50,6 +53,28 @@ struct Session<'a> {
     redis: Arc<Redis>,
 }
 
+#[derive(Debug)]
+enum OpResult {
+    Ok,
+    Integer(usize),
+    EmptyString,
+    SimpleString(String),
+    BulkString(Vec<String>),
+    Array(Vec<String>)
+}
+
+impl From<&'static str> for OpResult {
+    fn from(value: &'static str) -> Self {
+        OpResult::SimpleString(value.to_string())
+    }
+}
+
+impl From<usize> for OpResult {
+    fn from(value: usize) -> Self {
+        OpResult::Integer(value)
+    }
+}
+
 impl<'a> Session<'a> {
     pub fn new(socket: &'a mut TcpStream, redis: Arc<Redis>) -> Session<'a> {
         let (read, write) = socket.split();
@@ -61,63 +86,119 @@ impl<'a> Session<'a> {
         }
     }
 
-    async fn handle_cmd(&mut self) -> Result<String, Box<dyn Error>> {
+    async fn read_cmd(&mut self) -> Result<String, RedisError> {
         let mut r = String::new();
         self.read.read_line(&mut r).await?;
 
-        let raw_command = r.trim().to_string();
-        info!("raw command=`{}`", raw_command);
-        let command = cmd::parse_command(raw_command);
+        let mut cmd = String::new();
+        if r.chars().nth(0) == Some('*') {
+            let rest = &r.trim()[1..];
+            let mut cmd_parts_count = rest.parse::<usize>()?;
+
+            r.clear();
+            while cmd_parts_count > 0 {
+                self.read.read_line(&mut r).await?;
+                if r.chars().nth(0) == Some('$') {
+                    r.clear();
+                    continue;
+                }
+                cmd_parts_count -= 1;
+                cmd.push_str(r.trim());
+                cmd.push(' ');
+                r.clear();
+            }
+            cmd = cmd.trim().to_string();
+        } else {
+            cmd = r.trim().to_string();
+        }
+
+        Ok(cmd)
+    }
+
+    async fn handle_cmd(&mut self) -> Result<OpResult, RedisError> {
+        let cmd = self.read_cmd().await?;
+
+        info!("raw command=`{:?}`", &cmd);
+        let command = cmd::parse_command(cmd.as_str())?;
 
         match command {
-            Ok(Command::Ping) => Ok(String::from("PONG")),
-            Ok(Command::Get(key)) => match self.redis.get(&key).await {
-                Ok(Option::None) => Ok(String::from("NONE")),
-                Ok(Option::Some(v)) => Ok(String::from_utf8(v)?),
-                Err(e @ RedisError::TypeError) => Ok(format!("{}", e)),
+            Command::Ping => Ok(OpResult::from("PONG")),
+            Command::CommandDocs => Ok(OpResult::BulkString(Vec::new())),
+            Command::Get(key) => match self.redis.get(&key).await? {
+                Option::None => Ok(OpResult::EmptyString),
+                Option::Some(v) => {
+                    let s = String::from_utf8(v).unwrap();
+                    Ok(OpResult::SimpleString(s))
+                },
             },
-            Ok(Command::TtlCount) => Ok(format!("{}", self.redis.ttl_keys().await)),
-            Ok(Command::Set(key, value)) => {
+            Command::TtlCount => Ok(OpResult::from(self.redis.ttl_keys().await)),
+            Command::Set(key, value) => {
                 info!("set: {}", key);
                 self.redis.set(key, value).await;
-                Ok("+OK".to_string())
+
+                Ok(OpResult::Ok)
             }
-            Ok(Command::SetEx(key, value, ttl)) => {
+            Command::SetEx(key, value, ttl) => {
                 info!("setex: {}, {}", key, ttl);
                 self.redis.setex(key, value, ttl).await;
 
-                Ok("+OK".to_string())
+                Ok(OpResult::Ok)
             }
-            Ok(Command::Lpush(key, values, may_create)) => {
+            Command::Lpush(key, values, may_create) => {
                 info!("lpush: {}, {:?}, {}", key, values, may_create);
                 let len = self.redis.lpush(key, values, may_create).await?;
 
-                Ok(format!("(integer) {}", len))
+                Ok(OpResult::from(len))
             }
-            Ok(Command::Rpush(key, values, may_create)) => {
+            Command::Rpush(key, values, may_create) => {
                 info!("rpush: {}, {:?}, {}", key, values, may_create);
                 let len = self.redis.rpush(key, values, may_create).await?;
 
-                Ok(format!("(integer) {}", len))
+                Ok(OpResult::from(len))
             }
-            Ok(Command::Lpop(key)) => {
+            Command::Lpop(key) => {
                 info!("lpop: {}!", key);
-                match self.redis.lpop(&key, 1).await {
-                    Ok(v) if v.is_empty() => Ok(String::from("(nil)")),
-                    Ok(v) => Ok(String::from_utf8(v[0].to_vec())?),
-                    Err(e @ RedisError::TypeError) => Ok(format!("{}", e)),
+                match self.redis.lpop(&key, 1).await? {
+                    v => Ok( OpResult::Array( v.iter().map(|v| String::from_utf8(v.to_vec()).unwrap()).collect::<Vec<_>>() ) ),
                 }
             }
-            Err(CmdError::ParseError(message)) => Ok(format!("-ERR {}", message)),
         }
     }
 
     pub async fn run(&mut self) {
         loop {
-            let output = self.handle_cmd().await.unwrap();
+            let output = self.handle_cmd().await;
 
-            self.write.write_all(output.as_bytes()).await.unwrap();
-            self.write.write_u8('\n' as u8).await.unwrap();
+            info!("responding with {:?}", output);
+
+            let raw_output: String = match output {
+                Ok(OpResult::Ok) => "+OK\r\n".to_string(),
+                Ok(OpResult::EmptyString) => "$-1\r\n".to_string(),
+                Ok(OpResult::SimpleString(elem)) => {
+                    let mut s = String::new();
+                    s.push_str(format!("${}\r\n", elem.len()).as_str());
+                    s.push_str(&elem);
+                    s.push_str("\r\n");
+                    s
+                }
+                Ok(OpResult::Array(v)) if v.is_empty() => "*-1\r\n".to_string(),
+                Ok(OpResult::Array(v)) => {
+                    let mut s = String::new();
+                    s.push_str(format!("*{}\r\n", v.len()).as_str());
+                    v.iter().for_each(|elem| {
+                        s.push_str(format!("${}\r\n", elem.len()).as_str());
+                        s.push_str(elem);
+                        s.push_str("\r\n");
+                    });
+                    s
+                },
+                Ok(OpResult::Integer(v)) => format!(":{}\r\n", v),
+                Ok(OpResult::BulkString(s)) => "$-1\r\n".to_string(),
+                Err(e @ RedisError::TypeError) => format!("-WRONGTYPE {}\r\n", e),
+                Err(e) => format!("-ERR {}\r\n", e),
+            };
+
+            self.write.write_all(raw_output.as_bytes()).await.unwrap();
         }
     }
 }

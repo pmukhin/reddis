@@ -1,37 +1,12 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, LinkedList};
-use std::error::Error;
 use std::ops::Add;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-use std::fmt;
-
+use crate::err::RedisError;
 use log::info;
 
 static INITIAL_CAPACITY: usize = 256;
-
-#[derive(Debug)]
-pub enum RedisError {
-    TypeError,
-}
-
-impl fmt::Display for RedisError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RedisError::TypeError => write!(
-                f,
-                "WRONGTYPE Operation against a key holding the wrong kind of value"
-            ),
-        }
-    }
-}
-
-impl Error for RedisError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        None
-    }
-}
 
 enum Value {
     Raw(Vec<u8>),

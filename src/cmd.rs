@@ -1,29 +1,10 @@
-use std::error::Error;
-use std::fmt;
-
-#[derive(Debug)]
-pub enum CmdError {
-    ParseError(String),
-}
-
-impl fmt::Display for CmdError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            CmdError::ParseError(message) => write!(f, "{}", message),
-        }
-    }
-}
-
-impl Error for CmdError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        None
-    }
-}
+use crate::err::RedisError;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Ping,
     TtlCount,
+    CommandDocs,
     Get(String),
     Set(String, Vec<u8>),
     SetEx(String, Vec<u8>, u64),
@@ -32,16 +13,19 @@ pub enum Command {
     Lpop(String),
 }
 
-fn tokenize(s: String) -> Result<Vec<String>, CmdError> {
+fn tokenize(s: &str) -> Result<Vec<String>, RedisError> {
     if s.len() < 4 {
-        return Result::Err(CmdError::ParseError("command too short".to_string()));
+        return Result::Err(RedisError::ParseError("command too short".to_string()));
     }
     Ok(s.split(' ').map(|s| String::from(s)).collect::<Vec<_>>())
 }
 
-pub fn parse_command(s: String) -> Result<Command, CmdError> {
+pub fn parse_command(s: &str) -> Result<Command, RedisError> {
     let tokens = tokenize(s)?;
 
+    if tokens[0] == "COMMAND" && tokens[1] == "DOCS" && tokens.len() == 2 {
+        return Ok(Command::CommandDocs)
+    }
     if tokens[0] == "PING" {
         return Ok(Command::Ping);
     }
@@ -64,7 +48,7 @@ pub fn parse_command(s: String) -> Result<Command, CmdError> {
                 tokens[3].as_bytes().to_vec(),
                 v,
             )),
-            _ => Result::Err(CmdError::ParseError(
+            _ => Result::Err(RedisError::ParseError(
                 "invalid expire time in 'setex' command".to_string(),
             )),
         };
@@ -110,27 +94,27 @@ pub fn parse_command(s: String) -> Result<Command, CmdError> {
         ));
     }
 
-    Result::Err(CmdError::ParseError("invalid command".to_string()))
+    Result::Err(RedisError::ParseError("invalid command".to_string()))
 }
 
 mod tests {
     #[test]
     fn test_parse_command_ping() {
         assert!(matches!(
-            super::parse_command(String::from("PING")),
+            super::parse_command("PING"),
             Ok(super::Command::Ping)
         ))
     }
     #[test]
     fn test_parse_command_get() {
         assert!(matches!(
-            super::parse_command(String::from("GET 21232")),
+            super::parse_command("GET 21232"),
             Ok(super::Command::Get(_))
         ))
     }
     #[test]
     fn test_parse_command_set() {
-        let result = super::parse_command(String::from("SET 21232 2412312"));
+        let result = super::parse_command("SET 21232 2412312");
 
         assert!(matches!(result, Ok(super::Command::Set(_, _))))
     }
