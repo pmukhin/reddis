@@ -1,10 +1,10 @@
+use crate::err::RedisError;
+use log::info;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, LinkedList};
 use std::ops::Add;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use crate::err::RedisError;
-use log::info;
 
 static INITIAL_CAPACITY: usize = 256;
 
@@ -40,7 +40,7 @@ impl Redis {
 
     pub async fn set(&self, key: String, value: Vec<u8>) {
         self.shared_data
-            .try_write()
+            .write()
             .expect("Unable to lock mutex")
             .dict
             .insert(key, Value::Raw(value));
@@ -56,7 +56,7 @@ impl Redis {
 
         s_data
             .ttl_heap
-            .push(Reverse((ttl_value.as_secs(), key.to_string())));
+            .push(Reverse((ttl_value.as_secs(), key)));
 
         info!(
             "pushed 1 elem into ttl_heap, ttl_heap_len={}",
@@ -71,17 +71,17 @@ impl Redis {
 
         match value_opt {
             Some(Value::Raw(data)) => Ok(Some(data.to_vec())),
-            Some(_) => Result::Err(RedisError::TypeError),
+            Some(_) => Result::Err(RedisError::Type),
             None => Ok(None),
         }
     }
 
-    async fn do_push(
+    pub async fn push(
         &self,
         key: String,
         values: Vec<Vec<u8>>,
         allow_creation: bool,
-        push_f: bool,
+        front: bool,
     ) -> Result<usize, RedisError> {
         let mut write_from = self.shared_data.write().expect("mutex is poisoned");
 
@@ -90,16 +90,16 @@ impl Redis {
                 values.iter().for_each(|v| ll.push_front(v.to_vec()));
                 Ok(ll.len())
             }
-            Some(_) => Result::Err(RedisError::TypeError),
+            Some(_) => Result::Err(RedisError::Type),
             None => {
                 if !allow_creation {
                     return Ok(values.len());
-                }
+                };
 
                 let mut ll = LinkedList::new();
 
                 values.iter().for_each(|v| {
-                    if push_f {
+                    if front {
                         ll.push_front(v.to_vec())
                     } else {
                         ll.push_back(v.to_vec())
@@ -112,36 +112,23 @@ impl Redis {
         }
     }
 
-    pub async fn lpush(
+    pub async fn pop(
         &self,
-        key: String,
-        values: Vec<Vec<u8>>,
-        allow_creation: bool,
-    ) -> Result<usize, RedisError> {
-        self.do_push(key, values, allow_creation, true).await
-    }
-
-    pub async fn rpush(
-        &self,
-        key: String,
-        values: Vec<Vec<u8>>,
-        allow_creation: bool,
-    ) -> Result<usize, RedisError> {
-        self.do_push(key, values, allow_creation, false).await
-    }
-
-    pub async fn lpop(&self, key: &String, mut times: usize) -> Result<Vec<Vec<u8>>, RedisError> {
+        key: &String,
+        mut times: usize,
+        front: bool,
+    ) -> Result<Vec<Vec<u8>>, RedisError> {
         match self.shared_data.write().unwrap().dict.get_mut(key) {
             None => Ok(Vec::new()),
             Some(&mut Value::List(ref mut ll)) => {
                 let mut r = Vec::new();
-                while times > 0 && let Some(v) = ll.pop_front() {
+                while times > 0 && let Some(v) = if front { ll.pop_front() } else { ll.pop_back() } {
                     times -= 1;
                     r.push(v);
                 }
                 Ok(r)
             }
-            Some(_) => Result::Err(RedisError::TypeError),
+            Some(_) => Result::Err(RedisError::Type),
         }
     }
 }

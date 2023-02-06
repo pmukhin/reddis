@@ -1,8 +1,8 @@
 #![feature(let_chains)]
 
 mod cmd;
-mod redis;
 mod err;
+mod redis;
 
 use cmd::Command;
 
@@ -11,8 +11,6 @@ use redis::Redis;
 
 use std::env;
 use std::error::Error;
-use std::fmt::format;
-use std::os::macos::raw;
 use std::sync::Arc;
 
 use tokio::io::BufReader;
@@ -60,7 +58,7 @@ enum OpResult {
     EmptyString,
     SimpleString(String),
     BulkString(Vec<String>),
-    Array(Vec<String>)
+    Array(Vec<String>),
 }
 
 impl From<&'static str> for OpResult {
@@ -72,6 +70,17 @@ impl From<&'static str> for OpResult {
 impl From<usize> for OpResult {
     fn from(value: usize) -> Self {
         OpResult::Integer(value)
+    }
+}
+
+impl From<Vec<Vec<u8>>> for OpResult {
+    fn from(value: Vec<Vec<u8>>) -> Self {
+        OpResult::Array(
+            value
+                .iter()
+                .map(|v| String::from_utf8(v.to_vec()).unwrap())
+                .collect::<Vec<_>>(),
+        )
     }
 }
 
@@ -129,7 +138,7 @@ impl<'a> Session<'a> {
                 Option::Some(v) => {
                     let s = String::from_utf8(v).unwrap();
                     Ok(OpResult::SimpleString(s))
-                },
+                }
             },
             Command::TtlCount => Ok(OpResult::from(self.redis.ttl_keys().await)),
             Command::Set(key, value) => {
@@ -146,21 +155,25 @@ impl<'a> Session<'a> {
             }
             Command::Lpush(key, values, may_create) => {
                 info!("lpush: {}, {:?}, {}", key, values, may_create);
-                let len = self.redis.lpush(key, values, may_create).await?;
+                let len = self.redis.push(key, values, may_create, true).await?;
 
                 Ok(OpResult::from(len))
             }
             Command::Rpush(key, values, may_create) => {
                 info!("rpush: {}, {:?}, {}", key, values, may_create);
-                let len = self.redis.rpush(key, values, may_create).await?;
+                let len = self.redis.push(key, values, may_create, false).await?;
 
                 Ok(OpResult::from(len))
             }
             Command::Lpop(key) => {
                 info!("lpop: {}!", key);
-                match self.redis.lpop(&key, 1).await? {
-                    v => Ok( OpResult::Array( v.iter().map(|v| String::from_utf8(v.to_vec()).unwrap()).collect::<Vec<_>>() ) ),
-                }
+                let v = self.redis.pop(&key, 1, true).await?;
+                Ok(OpResult::from(v))
+            }
+            Command::Rpop(key) => {
+                info!("rpop: {}!", key);
+                let v = self.redis.pop(&key, 1, false).await?;
+                Ok(OpResult::from(v))
             }
         }
     }
@@ -191,11 +204,11 @@ impl<'a> Session<'a> {
                         s.push_str("\r\n");
                     });
                     s
-                },
-                Ok(OpResult::Integer(v)) => format!(":{}\r\n", v),
-                Ok(OpResult::BulkString(s)) => "$-1\r\n".to_string(),
-                Err(e @ RedisError::TypeError) => format!("-WRONGTYPE {}\r\n", e),
-                Err(e) => format!("-ERR {}\r\n", e),
+                }
+                Ok(OpResult::Integer(v)) => format!(":{v}\r\n"),
+                Ok(OpResult::BulkString(_)) => "$-1\r\n".to_string(),
+                Err(e @ RedisError::Type) => format!("-WRONGTYPE {e}\r\n"),
+                Err(e) => format!("-ERR {e}\r\n"),
             };
 
             self.write.write_all(raw_output.as_bytes()).await.unwrap();

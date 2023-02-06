@@ -11,20 +11,21 @@ pub enum Command {
     Lpush(String, Vec<Vec<u8>>, bool),
     Rpush(String, Vec<Vec<u8>>, bool),
     Lpop(String),
+    Rpop(String),
 }
 
 fn tokenize(s: &str) -> Result<Vec<String>, RedisError> {
     if s.len() < 4 {
-        return Result::Err(RedisError::ParseError("command too short".to_string()));
+        return Result::Err(RedisError::Parse("command too short".to_string()));
     }
-    Ok(s.split(' ').map(|s| String::from(s)).collect::<Vec<_>>())
+    Ok(s.split(' ').map(String::from).collect::<Vec<_>>())
 }
 
 pub fn parse_command(s: &str) -> Result<Command, RedisError> {
     let tokens = tokenize(s)?;
 
     if tokens[0] == "COMMAND" && tokens[1] == "DOCS" && tokens.len() == 2 {
-        return Ok(Command::CommandDocs)
+        return Ok(Command::CommandDocs);
     }
     if tokens[0] == "PING" {
         return Ok(Command::Ping);
@@ -48,13 +49,13 @@ pub fn parse_command(s: &str) -> Result<Command, RedisError> {
                 tokens[3].as_bytes().to_vec(),
                 v,
             )),
-            _ => Result::Err(RedisError::ParseError(
+            _ => Result::Err(RedisError::Parse(
                 "invalid expire time in 'setex' command".to_string(),
             )),
         };
     }
 
-    fn drop_two(tokens: &Vec<String>) -> Vec<Vec<u8>> {
+    fn drop_two(tokens: &[String]) -> Vec<Vec<u8>> {
         tokens[2..]
             .iter()
             .map(|x| x.as_bytes().to_vec())
@@ -63,6 +64,9 @@ pub fn parse_command(s: &str) -> Result<Command, RedisError> {
 
     if tokens[0] == "LPOP" && tokens.len() == 2 {
         return Result::Ok(Command::Lpop(tokens[1].to_string()));
+    }
+    if tokens[0] == "RPOP" && tokens.len() == 2 {
+        return Result::Ok(Command::Rpop(tokens[1].to_string()));
     }
 
     if tokens[0] == "LPUSH" && tokens.len() > 2 {
@@ -94,7 +98,7 @@ pub fn parse_command(s: &str) -> Result<Command, RedisError> {
         ));
     }
 
-    Result::Err(RedisError::ParseError("invalid command".to_string()))
+    Result::Err(RedisError::Parse("invalid command".to_string()))
 }
 
 mod tests {
