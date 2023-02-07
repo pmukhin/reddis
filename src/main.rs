@@ -34,15 +34,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let redis = Arc::new(Redis::new().await);
 
     loop {
-        let (socket, _) = listener.accept().await.unwrap();
-        start_session(socket, redis.clone()).await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let r = redis.clone();
+        tokio::spawn(async move {
+            Session::new(&mut socket, r).run().await;
+        });
     }
-}
-
-async fn start_session(mut socket: TcpStream, redis: Arc<Redis>) {
-    tokio::spawn(async move {
-        Session::new(&mut socket, redis).run().await;
-    });
 }
 
 struct Session<'a> {

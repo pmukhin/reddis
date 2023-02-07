@@ -3,7 +3,8 @@ use log::info;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, LinkedList};
 use std::ops::Add;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 static INITIAL_CAPACITY: usize = 256;
@@ -35,28 +36,26 @@ impl Redis {
     }
 
     pub async fn ttl_keys(&self) -> usize {
-        self.shared_data.read().unwrap().ttl_heap.len()
+        self.shared_data.read().await.ttl_heap.len()
     }
 
     pub async fn set(&self, key: String, value: Vec<u8>) {
         self.shared_data
             .write()
-            .expect("Unable to lock mutex")
+            .await
             .dict
             .insert(key, Value::Raw(value));
     }
 
     pub async fn setex(&self, key: String, value: Vec<u8>, ttl: u64) {
-        let s_data = &mut self.shared_data.write().unwrap();
+        let s_data = &mut self.shared_data.write().await;
 
         s_data.dict.insert(key.clone(), Value::Raw(value));
 
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let ttl_value = now.add(Duration::from_secs(ttl));
 
-        s_data
-            .ttl_heap
-            .push(Reverse((ttl_value.as_secs(), key)));
+        s_data.ttl_heap.push(Reverse((ttl_value.as_secs(), key)));
 
         info!(
             "pushed 1 elem into ttl_heap, ttl_heap_len={}",
@@ -65,7 +64,7 @@ impl Redis {
     }
 
     pub async fn get(&self, key: &String) -> Result<Option<Vec<u8>>, RedisError> {
-        let read_from = self.shared_data.read().expect("Unable to lock mutex");
+        let read_from = self.shared_data.read().await;
 
         let value_opt = read_from.dict.get(key);
 
@@ -83,7 +82,7 @@ impl Redis {
         allow_creation: bool,
         front: bool,
     ) -> Result<usize, RedisError> {
-        let mut write_from = self.shared_data.write().expect("mutex is poisoned");
+        let mut write_from = self.shared_data.write().await;
 
         match write_from.dict.get_mut(&key) {
             Some(&mut Value::List(ref mut ll)) => {
@@ -118,7 +117,7 @@ impl Redis {
         mut times: usize,
         front: bool,
     ) -> Result<Vec<Vec<u8>>, RedisError> {
-        match self.shared_data.write().unwrap().dict.get_mut(key) {
+        match self.shared_data.write().await.dict.get_mut(key) {
             None => Ok(Vec::new()),
             Some(&mut Value::List(ref mut ll)) => {
                 let mut r = Vec::new();
@@ -140,7 +139,7 @@ async fn spawn_ttl_heap_cleaner(shared_data: Arc<RwLock<SharedData>>) {
         loop {
             interval.tick().await;
 
-            let s_data = &mut shared_data.write().unwrap();
+            let s_data = &mut shared_data.write().await;
 
             if s_data.ttl_heap.is_empty() {
                 continue;

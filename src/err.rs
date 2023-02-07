@@ -17,7 +17,7 @@ impl fmt::Display for RedisError {
                 write!(f, "Operation against a key holding the wrong kind of value")
             }
             RedisError::Parse(message) => write!(f, "{message}"),
-            RedisError::IO(message)    => write!(f, "{message}"),
+            RedisError::IO(message) => write!(f, "{message}"),
         }
     }
 }

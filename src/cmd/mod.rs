@@ -68,7 +68,6 @@ pub fn parse_command(s: &str) -> Result<Command, RedisError> {
     if tokens[0] == "RPOP" && tokens.len() == 2 {
         return Result::Ok(Command::Rpop(tokens[1].to_string()));
     }
-
     if tokens[0] == "LPUSH" && tokens.len() > 2 {
         return Result::Ok(Command::Lpush(
             tokens[1].to_string(),
