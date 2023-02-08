@@ -4,8 +4,8 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, LinkedList};
 use std::ops::Add;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::RwLock;
 
 static INITIAL_CAPACITY: usize = 256;
 
@@ -47,13 +47,13 @@ impl Redis {
             .insert(key, Value::Raw(value));
     }
 
-    pub async fn setex(&self, key: String, value: Vec<u8>, ttl: u64) {
+    pub async fn setex(&self, key: String, value: Vec<u8>, ttl: usize) {
         let s_data = &mut self.shared_data.write().await;
 
         s_data.dict.insert(key.clone(), Value::Raw(value));
 
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        let ttl_value = now.add(Duration::from_secs(ttl));
+        let ttl_value = now.add(Duration::from_secs(ttl as u64));
 
         s_data.ttl_heap.push(Reverse((ttl_value.as_secs(), key)));
 

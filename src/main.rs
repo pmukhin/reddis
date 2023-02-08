@@ -4,6 +4,7 @@ mod cmd;
 mod err;
 mod redis;
 
+use cmd::parser::parse;
 use cmd::Command;
 
 use log::info;
@@ -104,20 +105,16 @@ impl<'a> Session<'a> {
             r.clear();
             while cmd_parts_count > 0 {
                 self.read.read_line(&mut r).await?;
-                if r.chars().nth(0) == Some('$') {
-                    r.clear();
-                    continue;
+                if r.chars().nth(0) != Some('$') {
+                    cmd_parts_count -= 1;
                 }
-                cmd_parts_count -= 1;
-                cmd.push_str(r.trim());
-                cmd.push(' ');
+                cmd.push_str(r.as_str());
                 r.clear();
             }
-            cmd = cmd.trim().to_string();
+            cmd = cmd.to_string();
         } else {
-            cmd = r.trim().to_string();
+            cmd = r.to_string();
         }
-
         Ok(cmd)
     }
 
@@ -125,7 +122,7 @@ impl<'a> Session<'a> {
         let cmd = self.read_cmd().await?;
 
         info!("raw command=`{:?}`", &cmd);
-        let command = cmd::parse_command(cmd.as_str())?;
+        let command = parse(cmd.as_str())?;
 
         match command {
             Command::Ping => Ok(OpResult::from("PONG")),
@@ -150,26 +147,38 @@ impl<'a> Session<'a> {
 
                 Ok(OpResult::Ok)
             }
-            Command::Lpush(key, values, may_create) => {
-                info!("lpush: {}, {:?}, {}", key, values, may_create);
-                let len = self.redis.push(key, values, may_create, true).await?;
+            Command::Lpush(key, values) => {
+                info!("lpush: {}, {:?}", key, values);
+                let len = self.redis.push(key, values, true, true).await?;
 
                 Ok(OpResult::from(len))
             }
-            Command::Rpush(key, values, may_create) => {
-                info!("rpush: {}, {:?}, {}", key, values, may_create);
-                let len = self.redis.push(key, values, may_create, false).await?;
+            Command::Rpush(key, values) => {
+                info!("rpush: {}, {:?}", key, values);
+                let len = self.redis.push(key, values, true, false).await?;
 
                 Ok(OpResult::from(len))
             }
-            Command::Lpop(key) => {
+            Command::LpushX(key, values) => {
+                info!("lpushx: {}, {:?}", key, values);
+                let len = self.redis.push(key, values, false, true).await?;
+
+                Ok(OpResult::from(len))
+            }
+            Command::RpushX(key, values) => {
+                info!("rpushx: {}, {:?}", key, values);
+                let len = self.redis.push(key, values, false, false).await?;
+
+                Ok(OpResult::from(len))
+            }
+            Command::Lpop(key, times) => {
                 info!("lpop: {}!", key);
-                let v = self.redis.pop(&key, 1, true).await?;
+                let v = self.redis.pop(&key, times, true).await?;
                 Ok(OpResult::from(v))
             }
-            Command::Rpop(key) => {
+            Command::Rpop(key, times) => {
                 info!("rpop: {}!", key);
-                let v = self.redis.pop(&key, 1, false).await?;
+                let v = self.redis.pop(&key, times, false).await?;
                 Ok(OpResult::from(v))
             }
         }
@@ -208,7 +217,10 @@ impl<'a> Session<'a> {
                 Err(e) => format!("-ERR {e}\r\n"),
             };
 
-            self.write.write_all(raw_output.as_bytes()).await.unwrap();
+            self.write
+                .write_all(raw_output.as_bytes())
+                .await
+                .expect("can't write response");
         }
     }
 }
