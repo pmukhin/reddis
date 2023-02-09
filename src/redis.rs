@@ -11,6 +11,7 @@ static INITIAL_CAPACITY: usize = 256;
 
 enum Value {
   Raw(Vec<u8>),
+  Integer(u64),
   List(LinkedList<Vec<u8>>),
 }
 
@@ -35,24 +36,28 @@ impl Redis {
     Redis { shared_data: arc }
   }
 
-  pub async fn set(&self, key: String, value: Vec<u8>) {
+  pub async fn set(&self, key: &str, value: &[u8]) {
     self
       .shared_data
       .write()
       .await
       .dict
-      .insert(key, Value::Raw(value));
+      .insert(key.to_string(), Value::Raw(value.to_vec()));
   }
 
-  pub async fn setex(&self, key: String, value: Vec<u8>, ttl: usize) {
+  pub async fn setex(&self, key: &str, value: &[u8], ttl: usize) {
     let s_data = &mut self.shared_data.write().await;
 
-    s_data.dict.insert(key.clone(), Value::Raw(value));
+    s_data
+      .dict
+      .insert(key.to_string(), Value::Raw(value.to_vec()));
 
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     let ttl_value = now.add(Duration::from_secs(ttl as u64));
 
-    s_data.ttl_heap.push(Reverse((ttl_value.as_secs(), key)));
+    s_data
+      .ttl_heap
+      .push(Reverse((ttl_value.as_secs(), key.to_string())));
 
     info!(
       "pushed 1 elem into ttl_heap, ttl_heap_len={}",
@@ -60,12 +65,13 @@ impl Redis {
     );
   }
 
-  pub async fn get(&self, key: &String) -> Result<Option<Vec<u8>>, RedisError> {
+  pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, RedisError> {
     let read_from = self.shared_data.read().await;
     let value_opt = read_from.dict.get(key);
 
     match value_opt {
       Some(Value::Raw(data)) => Ok(Some(data.to_vec())),
+      Some(Value::Integer(i)) => Ok(Some(i.to_string().as_str().as_bytes().to_vec())),
       Some(_) => Result::Err(RedisError::Type),
       None => Ok(None),
     }
@@ -73,14 +79,14 @@ impl Redis {
 
   pub async fn push(
     &self,
-    key: String,
+    key: &str,
     values: Vec<Vec<u8>>,
     allow_creation: bool,
     front: bool,
   ) -> Result<usize, RedisError> {
     let mut write_from = self.shared_data.write().await;
 
-    match write_from.dict.get_mut(&key) {
+    match write_from.dict.get_mut(key) {
       Some(&mut Value::List(ref mut ll)) => {
         values.iter().for_each(|v| ll.push_front(v.to_vec()));
         Ok(ll.len())
@@ -97,7 +103,7 @@ impl Redis {
             ll.push_back(v.to_vec());
           }
         });
-        write_from.dict.insert(key, Value::List(ll));
+        write_from.dict.insert(key.to_string(), Value::List(ll));
 
         Ok(values.len())
       }
@@ -106,7 +112,7 @@ impl Redis {
 
   pub async fn pop(
     &self,
-    key: &String,
+    key: &str,
     mut times: usize,
     front: bool,
   ) -> Result<Vec<Vec<u8>>, RedisError> {
@@ -124,16 +130,39 @@ impl Redis {
     }
   }
 
-  pub async fn delete(&self, keys: &Vec<String>) -> usize {
+  pub async fn delete(&self, keys: &[&str]) -> usize {
     let mut write_handle = self.shared_data.write().await;
     let mut count = 0;
     for key in keys {
-      if write_handle.dict.contains_key(key) {
+      if write_handle.dict.contains_key(*key) {
         count += 1;
-        write_handle.dict.remove(key);
+        write_handle.dict.remove(*key);
       }
     }
     count
+  }
+
+  pub async fn keys_count(&self) -> usize {
+    let read_handle = self.shared_data.read().await;
+    read_handle.dict.len()
+  }
+
+  pub async fn incr(&self, key: &str) -> Result<u64, RedisError> {
+    let mut write_handle = self.shared_data.write().await;
+    match write_handle.dict.get(key) {
+      Some(Value::Integer(v)) => {
+        let new_value = v + 1;
+        write_handle
+          .dict
+          .insert(key.to_owned(), Value::Integer(new_value));
+        Ok(new_value)
+      }
+      None => {
+        write_handle.dict.insert(key.to_owned(), Value::Integer(1));
+        Ok(1)
+      }
+      Some(_) => Result::Err(RedisError::Type),
+    }
   }
 }
 
@@ -175,8 +204,8 @@ mod tests {
     for i in 0..100 {
       redis
         .set(
-          format!("key_{}", i),
-          format!("value_{}", i).as_bytes().to_vec(),
+          format!("key_{}", i).as_str(),
+          format!("value_{}", i).as_bytes(),
         )
         .await
     }

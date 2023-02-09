@@ -30,13 +30,21 @@ enum CmdCode {
   Lpop,
   Rpop,
   Del,
+  Incr,
+  DbSize,
   CommandDocs,
 }
 
-fn cmd<'a>(i: &'a str) -> IResult<&'a str, CmdCode, ParseFailure> {
+fn value_len<'a>(i: &'a str) -> IResult<&'a str, usize, ParseFailure> {
   let (i, _) = tag("$")(i)?;
-  let (i, _) = take_while(|c: char| c.is_numeric())(i)?;
+  let (i, _u) = take_while(|c: char| c.is_numeric())(i)?;
   let (i, _) = tag("\r\n")(i)?;
+
+  Ok((i, _u.parse::<usize>().unwrap()))
+}
+
+fn cmd<'a>(i: &'a str) -> IResult<&'a str, CmdCode, ParseFailure> {
+  let (i, _) = opt(value_len)(i)?;
   let (i, v) = alt((
     map(tag_no_case("PING"), |_| CmdCode::Ping),
     map(tag_no_case("SET"), |_| CmdCode::Set),
@@ -49,6 +57,8 @@ fn cmd<'a>(i: &'a str) -> IResult<&'a str, CmdCode, ParseFailure> {
     map(tag_no_case("LPOP"), |_| CmdCode::Lpop),
     map(tag_no_case("RPOP"), |_| CmdCode::Rpop),
     map(tag_no_case("DEL"), |_| CmdCode::Del),
+    map(tag_no_case("INCR"), |_| CmdCode::Incr),
+    map(tag_no_case("DBSIZE"), |_| CmdCode::DbSize),
     map(tag_no_case("COMMAND"), |_| CmdCode::CommandDocs),
   ))(i)?;
   let (i, _) = tag("\r\n")(i)?;
@@ -80,7 +90,7 @@ fn string<'a>(i: &'a str) -> IResult<&'a str, &'a str, ParseFailure> {
 
 fn push<'a, F>(i: &'a str, f: F) -> IResult<&'a str, Command, ParseFailure>
 where
-  F: Fn(String, Vec<Vec<u8>>) -> Command,
+  F: Fn(&'a str, Vec<Vec<u8>>) -> Command<'a>,
 {
   let (i, key) = string(i)?;
   let (i, raw_values) = separated_list0(tag("\r\n"), value)(i)?;
@@ -89,17 +99,17 @@ where
     .map(|v| v.as_bytes().to_vec())
     .collect::<Vec<_>>();
 
-  Ok((i, f(key.to_string(), values)))
+  Ok((i, f(key, values)))
 }
 
 fn pop<'a, F>(i: &'a str, f: F) -> IResult<&'a str, Command, ParseFailure>
 where
-  F: Fn(String, usize) -> Command,
+  F: Fn(&'a str, usize) -> Command<'a>,
 {
   let (i, key) = string(i)?;
   let (i, count) = u_number(i)?;
 
-  Ok((i, f(key.to_string(), count)))
+  Ok((i, f(key, count)))
 }
 
 fn root<'a>(i: &'a str) -> IResult<&'a str, Command, ParseFailure> {
@@ -108,17 +118,17 @@ fn root<'a>(i: &'a str) -> IResult<&'a str, Command, ParseFailure> {
     CmdCode::Set => {
       let (i, key) = string(i)?;
       let (i, value) = string(i)?;
-      Ok((i, Command::Set(key.to_string(), value.as_bytes().to_vec())))
+      Ok((i, Command::Set(key, value.as_bytes())))
     }
     CmdCode::Get => {
       let (i, key) = string(i)?;
-      Ok((i, Command::Get(key.to_string())))
+      Ok((i, Command::Get(key)))
     }
     CmdCode::SetEx => {
       let (i, key) = string(i)?;
       let (i, value) = string(i)?;
       let (i, ttl) = u_number(i)?;
-      let cmd = Command::SetEx(key.to_string(), value.as_bytes().to_vec(), ttl);
+      let cmd = Command::SetEx(key, value.as_bytes(), ttl);
       Ok((i, cmd))
     }
     CmdCode::Lpush => push(i, Command::Lpush),
@@ -129,11 +139,16 @@ fn root<'a>(i: &'a str) -> IResult<&'a str, Command, ParseFailure> {
     CmdCode::Rpop => pop(i, Command::Rpop),
     CmdCode::CommandDocs => Ok((i, Command::CommandDocs)),
     CmdCode::Ping => Ok((i, Command::Ping)),
+    CmdCode::Incr => {
+      let (i, key) = string(i)?;
+      Ok((i, Command::Incr(key)))
+    }
     CmdCode::Del => {
       let (i, raw_values) = separated_list0(tag("\r\n"), value)(i)?;
-      let values = raw_values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+      let values = raw_values.iter().map(|v| *v).collect::<Vec<_>>();
       Ok((i, Command::Del(values)))
     }
+    CmdCode::DbSize => Ok((i, Command::DbSize))
   }
 }
 
@@ -142,7 +157,7 @@ pub struct ParseFailure(String);
 
 impl fmt::Display for ParseFailure {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(f, "parsing failure: {:?}", self.0)
+    write!(f, "parsing failure: `{:?}`", self.0)
   }
 }
 
@@ -182,6 +197,7 @@ impl ParseError<&str> for ParseFailure {
   }
 }
 
+#[cfg(test)]
 mod tests {
   use super::*;
   use crate::cmd::Command;
@@ -189,7 +205,13 @@ mod tests {
   #[test]
   fn test_get() {
     let raw_cmd = "$3\r\nGET\r\n$3\r\naaa\r\n";
-    assert_eq!(parse(raw_cmd).unwrap(), Command::Get(String::from("aaa")));
+    assert_eq!(parse(raw_cmd).unwrap(), Command::Get("aaa"));
+  }
+
+  #[test]
+  fn test_ping() {
+    let raw_cmd = "PING\r\n";
+    assert_eq!(parse(raw_cmd).unwrap(), Command::Ping);
   }
 
   #[test]
@@ -197,7 +219,7 @@ mod tests {
     let raw_cmd = "$3\r\nSET\r\n$3\r\naaa\r\n$3\r\naaa\r\n";
     assert_eq!(
       parse(raw_cmd).unwrap(),
-      Command::Set(String::from("aaa"), "aaa".as_bytes().to_vec())
+      Command::Set("aaa", "aaa".as_bytes())
     );
   }
 
@@ -208,7 +230,7 @@ mod tests {
     assert_eq!(
       parse(raw_cmd).unwrap(),
       Command::Lpush(
-        String::from("aaa"),
+        "aaa",
         vec!["1", "2", "3", "4", "5"]
           .iter()
           .map(|v| v.as_bytes().to_vec())
@@ -224,7 +246,7 @@ mod tests {
     assert_eq!(
       parse(raw_cmd).unwrap(),
       Command::Rpush(
-        String::from("aaa"),
+        "aaa",
         vec!["1", "2", "3", "4", "5"]
           .iter()
           .map(|v| v.as_bytes().to_vec())
@@ -240,7 +262,7 @@ mod tests {
     assert_eq!(
       parse(raw_cmd).unwrap(),
       Command::LpushX(
-        String::from("aaa"),
+        "aaa",
         vec!["1", "2", "3", "4", "5"]
           .iter()
           .map(|v| v.as_bytes().to_vec())
@@ -256,7 +278,7 @@ mod tests {
     assert_eq!(
       parse(raw_cmd).unwrap(),
       Command::RpushX(
-        String::from("aaa"),
+        "aaa",
         vec!["1", "2", "3", "4", "5"]
           .iter()
           .map(|v| v.as_bytes().to_vec())
@@ -268,19 +290,13 @@ mod tests {
   #[test]
   fn test_lpop() {
     let raw_cmd = "$4\r\nLPOP\r\n$2\r\naa\r\n$1\r\n2\r\n";
-    assert_eq!(
-      parse(raw_cmd).unwrap(),
-      Command::Lpop(String::from("aa"), 2)
-    );
+    assert_eq!(parse(raw_cmd).unwrap(), Command::Lpop("aa", 2));
   }
 
   #[test]
   fn test_rpop() {
     let raw_cmd = "$4\r\nRPOP\r\n$2\r\naa\r\n$1\r\n2\r\n";
-    assert_eq!(
-      parse(raw_cmd).unwrap(),
-      Command::Rpop(String::from("aa"), 2)
-    );
+    assert_eq!(parse(raw_cmd).unwrap(), Command::Rpop("aa", 2));
   }
 
   #[test]
@@ -288,11 +304,7 @@ mod tests {
     let raw_cmd = "$3\r\nDEL\r\n$3\r\naaa\r\n$3\r\nbbb\r\n$3\r\nccc\r\n";
     assert_eq!(
       parse(raw_cmd).unwrap(),
-      Command::Del(vec![
-        "aaa".to_string(),
-        "bbb".to_string(),
-        "ccc".to_string()
-      ])
+      Command::Del(vec!["aaa", "bbb", "ccc"])
     );
   }
 }
