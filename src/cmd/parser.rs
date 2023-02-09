@@ -90,13 +90,13 @@ fn string<'a>(i: &'a str) -> IResult<&'a str, &'a str, ParseFailure> {
 
 fn push<'a, F>(i: &'a str, f: F) -> IResult<&'a str, Command, ParseFailure>
 where
-  F: Fn(&'a str, Vec<Vec<u8>>) -> Command<'a>,
+  F: Fn(&'a str, Vec<&'a [u8]>) -> Command<'a>,
 {
   let (i, key) = string(i)?;
   let (i, raw_values) = separated_list0(tag("\r\n"), value)(i)?;
   let values = raw_values
     .iter()
-    .map(|v| v.as_bytes().to_vec())
+    .map(|v| v.as_bytes())
     .collect::<Vec<_>>();
 
   Ok((i, f(key, values)))
@@ -233,7 +233,7 @@ mod tests {
         "aaa",
         vec!["1", "2", "3", "4", "5"]
           .iter()
-          .map(|v| v.as_bytes().to_vec())
+          .map(|v| v.as_bytes())
           .collect(),
       )
     );
@@ -249,7 +249,7 @@ mod tests {
         "aaa",
         vec!["1", "2", "3", "4", "5"]
           .iter()
-          .map(|v| v.as_bytes().to_vec())
+          .map(|v| v.as_bytes())
           .collect(),
       )
     );
@@ -265,7 +265,7 @@ mod tests {
         "aaa",
         vec!["1", "2", "3", "4", "5"]
           .iter()
-          .map(|v| v.as_bytes().to_vec())
+          .map(|v| v.as_bytes())
           .collect(),
       )
     );
@@ -281,7 +281,7 @@ mod tests {
         "aaa",
         vec!["1", "2", "3", "4", "5"]
           .iter()
-          .map(|v| v.as_bytes().to_vec())
+          .map(|v| v.as_bytes())
           .collect(),
       )
     );

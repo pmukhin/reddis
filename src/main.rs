@@ -131,7 +131,7 @@ impl<'a> Session<'a> {
       Command::Get(key) => match self.redis.get(key).await? {
         Option::None => Ok(OpResult::EmptyString),
         Option::Some(v) => {
-          let s = String::from_utf8(v).unwrap();
+          let s = String::from_utf8(v.to_vec()).unwrap();
           Ok(OpResult::SimpleString(s))
         }
       },
@@ -211,7 +211,7 @@ impl<'a> Session<'a> {
           s.push_str("\r\n");
           s
         }
-        Ok(OpResult::Nothing) => "\0".to_string(), // to close connection if it's stale
+        Ok(OpResult::Nothing) => "\0".to_string(), // to close connection if it's
         Ok(OpResult::Array(v)) if v.is_empty() => "*-1\r\n".to_string(),
         Ok(OpResult::Array(v)) => {
           let mut s = String::new();

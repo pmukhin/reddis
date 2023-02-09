@@ -80,7 +80,7 @@ impl Redis {
   pub async fn push(
     &self,
     key: &str,
-    values: Vec<Vec<u8>>,
+    values: Vec<&[u8]>,
     allow_creation: bool,
     front: bool,
   ) -> Result<usize, RedisError> {
