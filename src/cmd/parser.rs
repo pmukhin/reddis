@@ -29,10 +29,11 @@ enum CmdCode {
   RpushX,
   Lpop,
   Rpop,
+  Del,
   CommandDocs,
 }
 
-fn cmd<'a, E: ParseError<&'a str>>(i: &'a str) -> IResult<&'a str, CmdCode, E> {
+fn cmd<'a>(i: &'a str) -> IResult<&'a str, CmdCode, ParseFailure> {
   let (i, _) = tag("$")(i)?;
   let (i, _) = take_while(|c: char| c.is_numeric())(i)?;
   let (i, _) = tag("\r\n")(i)?;
@@ -47,6 +48,7 @@ fn cmd<'a, E: ParseError<&'a str>>(i: &'a str) -> IResult<&'a str, CmdCode, E> {
     map(tag_no_case("RPUSH"), |_| CmdCode::Rpush),
     map(tag_no_case("LPOP"), |_| CmdCode::Lpop),
     map(tag_no_case("RPOP"), |_| CmdCode::Rpop),
+    map(tag_no_case("DEL"), |_| CmdCode::Del),
     map(tag_no_case("COMMAND"), |_| CmdCode::CommandDocs),
   ))(i)?;
   let (i, _) = tag("\r\n")(i)?;
@@ -127,6 +129,11 @@ fn root<'a>(i: &'a str) -> IResult<&'a str, Command, ParseFailure> {
     CmdCode::Rpop => pop(i, Command::Rpop),
     CmdCode::CommandDocs => Ok((i, Command::CommandDocs)),
     CmdCode::Ping => Ok((i, Command::Ping)),
+    CmdCode::Del => {
+      let (i, raw_values) = separated_list0(tag("\r\n"), value)(i)?;
+      let values = raw_values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+      Ok((i, Command::Del(values)))
+    }
   }
 }
 
@@ -273,6 +280,19 @@ mod tests {
     assert_eq!(
       parse(raw_cmd).unwrap(),
       Command::Rpop(String::from("aa"), 2)
+    );
+  }
+
+  #[test]
+  fn test_del() {
+    let raw_cmd = "$3\r\nDEL\r\n$3\r\naaa\r\n$3\r\nbbb\r\n$3\r\nccc\r\n";
+    assert_eq!(
+      parse(raw_cmd).unwrap(),
+      Command::Del(vec![
+        "aaa".to_string(),
+        "bbb".to_string(),
+        "ccc".to_string()
+      ])
     );
   }
 }

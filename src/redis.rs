@@ -123,6 +123,18 @@ impl Redis {
       Some(_) => Result::Err(RedisError::Type),
     }
   }
+
+  pub async fn delete(&self, keys: &Vec<String>) -> usize {
+    let mut write_handle = self.shared_data.write().await;
+    let mut count = 0;
+    for key in keys {
+      if write_handle.dict.contains_key(key) {
+        count += 1;
+        write_handle.dict.remove(key);
+      }
+    }
+    count
+  }
 }
 
 async fn spawn_ttl_heap_cleaner(shared_data: Arc<RwLock<SharedData>>) {

@@ -13,4 +13,5 @@ pub enum Command {
   RpushX(String, Vec<Vec<u8>>),
   Lpop(String, usize),
   Rpop(String, usize),
+  Del(Vec<String>),
 }
