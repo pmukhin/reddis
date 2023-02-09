@@ -5,7 +5,6 @@ Simple Redis implmentation in Rust Programming Language. This is by no means a p
 ### Benchmarks
 | Command | Throughput |
 | --- | ----------- |
-| GET | 145137.88 RPS |
-| SET | 52548.61 RPS |
-| LPUSH | 44385.27 RPS |
-
+| `GET` | 145137.88 RPS |
+| `SET` | 52548.61 RPS |
+| `LPUSH` | 44385.27 RPS |
