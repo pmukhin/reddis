@@ -7,6 +7,7 @@ mod redis;
 use cmd::parser::parse;
 use cmd::Command;
 
+use std::borrow::Cow;
 use log::{info, warn};
 use redis::Redis;
 
@@ -201,18 +202,18 @@ impl<'a> Session<'a> {
     loop {
       let output = self.handle_cmd().await;
 
-      let raw_output: String = match output {
-        Ok(OpResult::Ok) => "+OK\r\n".to_string(),
-        Ok(OpResult::EmptyString) => "$-1\r\n".to_string(),
+      let raw_output: Cow<'static, str> = match output {
+        Ok(OpResult::Ok) => "+OK\r\n".into(),
+        Ok(OpResult::EmptyString) => "$-1\r\n".into(),
         Ok(OpResult::SimpleString(elem)) => {
           let mut s = String::new();
           s.push_str(format!("${}\r\n", elem.len()).as_str());
           s.push_str(&elem);
           s.push_str("\r\n");
-          s
+          s.into()
         }
-        Ok(OpResult::Nothing) => "\0".to_string(), // to close connection if it's
-        Ok(OpResult::Array(v)) if v.is_empty() => "*-1\r\n".to_string(),
+        Ok(OpResult::Nothing) => "\0".into(), // to close connection if it's
+        Ok(OpResult::Array(v)) if v.is_empty() => "*-1\r\n".into(),
         Ok(OpResult::Array(v)) => {
           let mut s = String::new();
           s.push_str(format!("*{}\r\n", v.len()).as_str());
@@ -221,16 +222,16 @@ impl<'a> Session<'a> {
             s.push_str(elem);
             s.push_str("\r\n");
           });
-          s
+          s.into()
         }
-        Ok(OpResult::Integer(v)) => format!(":{v}\r\n"),
-        Ok(OpResult::BulkString(_)) => "$-1\r\n".to_string(),
-        Err(e @ RedisError::Type) => format!("-WRONGTYPE {e}\r\n"),
+        Ok(OpResult::Integer(v)) => format!(":{v}\r\n").into(),
+        Ok(OpResult::BulkString(_)) => "$-1\r\n".into(),
+        Err(e @ RedisError::Type) => format!("-WRONGTYPE {e}\r\n").into(),
         Err(RedisError::Parse(msg)) => {
           warn!("parse error: {msg}");
-          format!("-ERR {msg}\r\n")
+          format!("-ERR {msg}\r\n").into()
         }
-        Err(e) => format!("-ERR {e}\r\n"),
+        Err(e) => format!("-ERR {e}\r\n").into(),
       };
 
       self
