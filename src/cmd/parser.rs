@@ -5,7 +5,7 @@ use std::{fmt, num::ParseIntError};
 
 use nom::{
   branch::alt,
-  bytes::complete::{escaped, tag, tag_no_case, take_while},
+  bytes::complete::{escaped, tag, tag_no_case, take_while, take},
   character::complete::{alphanumeric1 as alphanumeric, char, digit0, one_of},
   combinator::{cut, map, opt},
   error::{
@@ -29,9 +29,12 @@ enum CmdCode {
   RpushX,
   Lpop,
   Rpop,
+  Hget,
+  Hset,
   Del,
   Incr,
   DbSize,
+  Config,
   CommandDocs,
 }
 
@@ -43,23 +46,26 @@ fn value_len<'a>(i: &'a str) -> IResult<&'a str, usize, ParseFailure> {
   Ok((i, _u.parse::<usize>().unwrap()))
 }
 
-fn cmd<'a>(i: &'a str) -> IResult<&'a str, CmdCode, ParseFailure> {
+fn cmd<'a>(i: &str) -> IResult<&str, CmdCode, ParseFailure> {
   let (i, _) = opt(value_len)(i)?;
   let (i, v) = alt((
     map(tag_no_case("PING"), |_| CmdCode::Ping),
+    map(tag_no_case("SETEX"), |_| CmdCode::SetEx),
     map(tag_no_case("SET"), |_| CmdCode::Set),
     map(tag_no_case("GET"), |_| CmdCode::Get),
-    map(tag_no_case("SETEX"), |_| CmdCode::SetEx),
     map(tag_no_case("LPUSHX"), |_| CmdCode::LpushX),
     map(tag_no_case("RPUSHX"), |_| CmdCode::RpushX),
     map(tag_no_case("LPUSH"), |_| CmdCode::Lpush),
     map(tag_no_case("RPUSH"), |_| CmdCode::Rpush),
     map(tag_no_case("LPOP"), |_| CmdCode::Lpop),
     map(tag_no_case("RPOP"), |_| CmdCode::Rpop),
+    map(tag_no_case("HGET"), |_| CmdCode::Hget),
+    map(tag_no_case("HSET"), |_| CmdCode::Hset),
     map(tag_no_case("DEL"), |_| CmdCode::Del),
     map(tag_no_case("INCR"), |_| CmdCode::Incr),
     map(tag_no_case("DBSIZE"), |_| CmdCode::DbSize),
     map(tag_no_case("COMMAND"), |_| CmdCode::CommandDocs),
+    map(tag_no_case("CONFIG"), |_| CmdCode::Config),
   ))(i)?;
   let (i, _) = tag("\r\n")(i)?;
 
@@ -71,7 +77,7 @@ fn u_number<'a>(i: &'a str) -> IResult<&'a str, usize, ParseFailure> {
   Ok((i, v.parse::<usize>().unwrap()))
 }
 
-fn value<'a>(i: &'a str) -> IResult<&'a str, &'a str, ParseFailure> {
+fn value(i: &str) -> IResult<&str, &str, ParseFailure> {
   let (i, _) = tag("$")(i)?;
   let (i, size_str) = digit0(i)?;
   let str_size = size_str.parse::<usize>().unwrap();
@@ -81,7 +87,7 @@ fn value<'a>(i: &'a str) -> IResult<&'a str, &'a str, ParseFailure> {
   Ok((&i[str_size..], value))
 }
 
-fn string<'a>(i: &'a str) -> IResult<&'a str, &'a str, ParseFailure> {
+fn string(i: &str) -> IResult<&str, &str, ParseFailure> {
   let (i, value) = value(i)?;
   let (i, _) = tag("\r\n")(i)?;
 
@@ -102,7 +108,7 @@ where
   Ok((i, f(key, values)))
 }
 
-fn pop<'a, F>(i: &'a str, f: F) -> IResult<&'a str, Command, ParseFailure>
+fn pop<'a, F>(i: &'a str, f: F) -> IResult<&'a str, Command<'a>, ParseFailure>
 where
   F: Fn(&'a str, usize) -> Command<'a>,
 {
@@ -112,7 +118,7 @@ where
   Ok((i, f(key, count)))
 }
 
-fn root<'a>(i: &'a str) -> IResult<&'a str, Command, ParseFailure> {
+fn root<'a>(i: &'a str) -> IResult<&'a str, Command<'a>, ParseFailure> {
   let (i, cmd) = cmd(i)?;
   match cmd {
     CmdCode::Set => {
@@ -126,8 +132,8 @@ fn root<'a>(i: &'a str) -> IResult<&'a str, Command, ParseFailure> {
     }
     CmdCode::SetEx => {
       let (i, key) = string(i)?;
-      let (i, value) = string(i)?;
       let (i, ttl) = u_number(i)?;
+      let (i, value) = string(i)?;
       let cmd = Command::SetEx(key, value.as_bytes(), ttl);
       Ok((i, cmd))
     }
@@ -145,10 +151,17 @@ fn root<'a>(i: &'a str) -> IResult<&'a str, Command, ParseFailure> {
     }
     CmdCode::Del => {
       let (i, raw_values) = separated_list0(tag("\r\n"), value)(i)?;
-      let values = raw_values.iter().map(|v| *v).collect::<Vec<_>>();
+      let values = raw_values.to_vec();
       Ok((i, Command::Del(values)))
     }
-    CmdCode::DbSize => Ok((i, Command::DbSize))
+    CmdCode::DbSize => Ok((i, Command::DbSize)),
+    CmdCode::Hget => {
+      let (i, key) = string(i)?;
+      let (i, value) = string(i)?;
+      Ok((i, Command::Set(key, value.as_bytes())))
+    },
+    CmdCode::Config => Ok((i, Command::Config)),
+    _ => todo!(),
   }
 }
 
@@ -161,7 +174,7 @@ impl fmt::Display for ParseFailure {
   }
 }
 
-pub fn parse<'a>(i: &'a str) -> Result<Command, RedisError> {
+pub fn parse(i: &str) -> Result<Command, RedisError> {
   let (_, cmd) = root(i)?;
   Ok(cmd)
 }
@@ -170,7 +183,7 @@ impl From<nom::Err<ParseFailure>> for RedisError {
   fn from(value: nom::Err<ParseFailure>) -> Self {
     match value {
       Err::Incomplete(_) => todo!(),
-      Err::Error(e) => RedisError::Parse(format!("{}", e)),
+      Err::Error(e) => RedisError::Parse(format!("{e}")),
       Err::Failure(_) => todo!(),
     }
   }
@@ -220,6 +233,15 @@ mod tests {
     assert_eq!(
       parse(raw_cmd).unwrap(),
       Command::Set("aaa", "aaa".as_bytes())
+    );
+  }
+
+  #[test]
+  fn test_setex() {
+    let raw_cmd = "$3\r\nSETEX\r\n$3\r\naaa\r\n$1\r\n5\r\n$3\r\naaa\r\n";
+    assert_eq!(
+      parse(raw_cmd).unwrap(),
+      Command::SetEx("aaa", "aaa".as_bytes(), 5)
     );
   }
 
@@ -305,6 +327,15 @@ mod tests {
     assert_eq!(
       parse(raw_cmd).unwrap(),
       Command::Del(vec!["aaa", "bbb", "ccc"])
+    );
+  }
+
+  #[test]
+  fn test_conf() {
+    let raw_cmd = "$6\r\nCONFIG\r\n$3\r\nGET\r\n$3\r\nbbb\r\n";
+    assert_eq!(
+      parse(raw_cmd).unwrap(),
+      Command::Config
     );
   }
 }

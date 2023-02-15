@@ -5,6 +5,7 @@ pub enum Command<'a> {
   Ping,
   CommandDocs,
   DbSize,
+  Config,
   Get(&'a str),
   Set(&'a str, &'a [u8]),
   SetEx(&'a str, &'a [u8], usize),

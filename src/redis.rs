@@ -3,15 +3,16 @@ use log::info;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, LinkedList};
 use std::ops::Add;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
+use std::borrow::Cow;
 
 static INITIAL_CAPACITY: usize = 256;
 
 enum Value {
-  Raw(Vec<u8>),
-  Integer(u64),
+  Raw(Arc<Vec<u8>>),
   List(LinkedList<Vec<u8>>),
 }
 
@@ -42,7 +43,7 @@ impl Redis {
       .write()
       .await
       .dict
-      .insert(key.to_string(), Value::Raw(value.to_vec()));
+      .insert(key.to_string(), Value::Raw(Arc::new(value.to_vec())));
   }
 
   pub async fn setex(&self, key: &str, value: &[u8], ttl: usize) {
@@ -50,7 +51,7 @@ impl Redis {
 
     s_data
       .dict
-      .insert(key.to_string(), Value::Raw(value.to_vec()));
+      .insert(key.to_string(), Value::Raw(Arc::new(value.to_vec())));
 
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     let ttl_value = now.add(Duration::from_secs(ttl as u64));
@@ -65,13 +66,12 @@ impl Redis {
     );
   }
 
-  pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, RedisError> {
+  pub async fn get(&self, key: &str) -> Result<Option<Arc<Vec<u8>>>, RedisError> {
     let read_from = self.shared_data.read().await;
     let value_opt = read_from.dict.get(key);
 
     match value_opt {
-      Some(Value::Raw(data)) => Ok(Some(data.to_vec())),
-      Some(Value::Integer(i)) => Ok(Some(i.to_string().as_str().as_bytes().to_vec())),
+      Some(Value::Raw(data)) => Ok(Some(Arc::clone(data))),
       Some(_) => Result::Err(RedisError::Type),
       None => Ok(None),
     }
@@ -147,18 +147,25 @@ impl Redis {
     read_handle.dict.len()
   }
 
-  pub async fn incr(&self, key: &str) -> Result<u64, RedisError> {
+  pub async fn incr(&self, key: &str) -> Result<i64, RedisError> {
     let mut write_handle = self.shared_data.write().await;
     match write_handle.dict.get(key) {
-      Some(Value::Integer(v)) => {
-        let new_value = v + 1;
+      Some(Value::Raw(v)) => {
+        let v: Result<i64, RedisError> = match String::from_utf8_lossy(v) {
+           Cow::Borrowed(v) => {
+              v.parse::<i64>().or(Err(RedisError::Type))
+           }
+           _ => Err(RedisError::Type)
+        };
+
+        let new_value = v? + 1;
         write_handle
           .dict
-          .insert(key.to_owned(), Value::Integer(new_value));
+          .insert(key.to_owned(), Value::Raw(Arc::new( new_value.to_string().as_bytes().to_vec() )));
         Ok(new_value)
       }
       None => {
-        write_handle.dict.insert(key.to_owned(), Value::Integer(1));
+        write_handle.dict.insert(key.to_owned(), Value::Raw(Arc::new( "1".as_bytes().to_vec() )));
         Ok(1)
       }
       Some(_) => Result::Err(RedisError::Type),
@@ -197,7 +204,11 @@ async fn spawn_ttl_heap_cleaner(shared_data: Arc<RwLock<SharedData>>) {
   });
 }
 
+#[cfg(test)]
 mod tests {
+  use std::sync::Arc;
+  use std::rc::Rc;
+
   #[tokio::test]
   async fn test_redis_set() {
     let redis = super::Redis::new().await;
@@ -211,7 +222,7 @@ mod tests {
     }
     for i in 0..100 {
       let key = format!("key_{}", i);
-      let value = format!("value_{}", i).as_bytes().to_vec();
+      let value = Arc::new(format!("value_{}", i).as_bytes().to_vec());
 
       assert_eq!(redis.get(&key).await.unwrap(), Some(value));
     }

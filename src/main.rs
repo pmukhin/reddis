@@ -54,22 +54,22 @@ struct Session<'a> {
 enum OpResult {
   Ok,
   Nothing,
-  Integer(u64),
+  Integer(i64),
   EmptyString,
-  SimpleString(String),
+  SimpleString(Arc<Vec<u8>>),
   BulkString(Vec<String>),
   Array(Vec<String>),
 }
 
 impl From<&'static str> for OpResult {
   fn from(value: &'static str) -> Self {
-    OpResult::SimpleString(value.to_string())
+    OpResult::SimpleString(Arc::new(value.as_bytes().to_vec()))
   }
 }
 
 impl From<usize> for OpResult {
   fn from(value: usize) -> Self {
-    OpResult::Integer(value as u64)
+    OpResult::Integer(value as i64)
   }
 }
 
@@ -132,8 +132,7 @@ impl<'a> Session<'a> {
       Command::Get(key) => match self.redis.get(key).await? {
         Option::None => Ok(OpResult::EmptyString),
         Option::Some(v) => {
-          let s = String::from_utf8(v.to_vec()).unwrap();
-          Ok(OpResult::SimpleString(s))
+          Ok(OpResult::SimpleString(v))
         }
       },
       Command::Set(key, value) => {
@@ -186,15 +185,16 @@ impl<'a> Session<'a> {
         info!("delete {:?}!", keys);
         let del_keys_count: usize = self.redis.delete(&keys).await;
 
-        Ok(OpResult::Integer(del_keys_count as u64))
+        Ok(OpResult::Integer(del_keys_count as i64))
       }
       Command::Incr(key) => {
         info!("incr! {:?}", key);
-        let v: u64 = self.redis.incr(key).await?;
+        let v = self.redis.incr(key).await?;
 
         Ok(OpResult::Integer(v))
       }
-      Command::DbSize => Ok(OpResult::Integer(self.redis.keys_count().await as u64))
+      Command::DbSize => Ok(OpResult::Integer(self.redis.keys_count().await as i64)),
+      Command::Config => Ok(OpResult::BulkString(Vec::new())),
     }
   }
 
@@ -208,7 +208,9 @@ impl<'a> Session<'a> {
         Ok(OpResult::SimpleString(elem)) => {
           let mut s = String::new();
           s.push_str(format!("${}\r\n", elem.len()).as_str());
-          s.push_str(&elem);
+          for ch in &*elem {
+            s.push(*ch as char);
+          }
           s.push_str("\r\n");
           s.into()
         }
