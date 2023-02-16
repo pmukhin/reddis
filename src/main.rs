@@ -11,6 +11,7 @@ use cmd::parser::parse;
 
 use log::warn;
 use redis::Redis;
+use tokio::sync::Mutex;
 use std::borrow::Cow;
 
 use value::RedisValue;
@@ -22,6 +23,7 @@ use std::sync::Arc;
 
 use journal::{Disabled, Simple, Writer};
 
+use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::io::{AsyncRead, BufReader};
 use tokio::net::tcp::{ReadHalf, WriteHalf};
@@ -48,6 +50,14 @@ async fn start_with_no_journal(listener: &TcpListener) -> Result<(), Box<dyn Err
   start(redis, listener).await
 }
 
+async fn start_with_simple_journaling(
+  listener: &TcpListener,
+  file: Mutex<File>
+) -> Result<(), Box<dyn Error>> {
+  let redis = Arc::new(Redis::new(Simple::make(file)).await);
+  start(redis, listener).await
+}
+
 async fn start<W: Writer + Send + Sync + 'static>(
   redis: Arc<Redis<W>>,
   listener: &TcpListener,
@@ -64,7 +74,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
   SimpleLogger::new().init()?;
 
   let args = Cli::parse();
-
   let addr = args.addr.unwrap_or_else(|| "0.0.0.0:6380".to_string());
 
   let listener = TcpListener::bind(&addr).await?;
@@ -73,8 +82,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
   if journal == "disabled" {
     start_with_no_journal(&listener).await
   } else {
-    todo!()
-    // start_with_no_simple_journaling(&listener)
+    let path = "./log";
+    let mut file = File::create(&path).await?;
+    let file = Mutex::new(file);
+    start_with_simple_journaling(&listener, file).await
   }
 }
 
