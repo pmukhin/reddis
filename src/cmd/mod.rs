@@ -1,3 +1,5 @@
+use std::fmt::{Debug, Display};
+
 pub mod parser;
 
 #[derive(Debug, PartialEq, Eq)]

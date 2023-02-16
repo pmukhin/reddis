@@ -5,7 +5,7 @@ use std::{fmt, num::ParseIntError};
 
 use nom::{
   branch::alt,
-  bytes::complete::{escaped, tag, tag_no_case, take_while, take},
+  bytes::complete::{escaped, tag, tag_no_case, take, take_while},
   character::complete::{alphanumeric1 as alphanumeric, char, digit0, one_of},
   combinator::{cut, map, opt},
   error::{
@@ -100,10 +100,7 @@ where
 {
   let (i, key) = string(i)?;
   let (i, raw_values) = separated_list0(tag("\r\n"), value)(i)?;
-  let values = raw_values
-    .iter()
-    .map(|v| v.as_bytes())
-    .collect::<Vec<_>>();
+  let values = raw_values.iter().map(|v| v.as_bytes()).collect::<Vec<_>>();
 
   Ok((i, f(key, values)))
 }
@@ -159,7 +156,7 @@ fn root<'a>(i: &'a str) -> IResult<&'a str, Command<'a>, ParseFailure> {
       let (i, key) = string(i)?;
       let (i, value) = string(i)?;
       Ok((i, Command::Set(key, value.as_bytes())))
-    },
+    }
     CmdCode::Config => Ok((i, Command::Config)),
     _ => todo!(),
   }
@@ -333,9 +330,6 @@ mod tests {
   #[test]
   fn test_conf() {
     let raw_cmd = "$6\r\nCONFIG\r\n$3\r\nGET\r\n$3\r\nbbb\r\n";
-    assert_eq!(
-      parse(raw_cmd).unwrap(),
-      Command::Config
-    );
+    assert_eq!(parse(raw_cmd).unwrap(), Command::Config);
   }
 }
